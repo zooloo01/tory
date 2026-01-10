@@ -1,0 +1,50 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(cuid())
+  supabaseId  String?  @unique
+  name        String
+  email       String   @unique
+  phone       String?  @unique
+  role        String   @default("customer") // "customer", "admin"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  appointments Appointment[]
+}
+
+model Admin {
+  id        String   @id @default(cuid())
+  phone     String   @unique
+  createdAt DateTime @default(now())
+}
+
+model Service {
+  id          String   @id @default(cuid())
+  title       String
+  durationMin Int
+  price       Float
+  bufferMin   Int      @default(5)
+  appointments Appointment[]
+}
+
+model Appointment {
+  id        String   @id @default(cuid())
+  startUtc  DateTime
+  endUtc    DateTime
+  status    String   @default("confirmed") // "confirmed", "cancelled", "completed"
+  userId    String?  
+  user      User?    @relation(fields: [userId], references: [id])
+  serviceId String
+  service   Service  @relation(fields: [serviceId], references: [id])
+  guestName String?
+  guestPhone String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
