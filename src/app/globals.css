@@ -1,26 +1,74 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
+  /* Colors */
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --primary-vibrant: #60a5fa;
+
+  --background: #f3f4f6;
   --foreground: #171717;
+
+  --surface: rgba(255, 255, 255, 0.6);
+  --border-color: rgba(255, 255, 255, 0.4);
+
+  /* Gradients */
+  --mesh-gradient: radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.3) 0px, transparent 50%), radial-gradient(at 100% 0%, rgba(236, 72, 153, 0.3) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.3) 0px, transparent 50%), radial-gradient(at 0% 100%, rgba(139, 92, 246, 0.3) 0px, transparent 50%);
+
+  /* Animation */
+  --ease-spring: cubic-bezier(.2,.9,.25,1);
 }
 
 @theme inline {
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-vibrant: var(--primary-vibrant);
+  
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  
+  --color-surface: var(--surface);
+  --color-glass-border: var(--border-color);
+
+  --font-sans: var(--font-geist-sans), "Inter", system-ui, sans-serif;
   --font-mono: var(--font-geist-mono);
+  
+  --animate-micro: 180ms var(--ease-spring);
+  --animate-modal: 360ms var(--ease-spring);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+    --surface: rgba(23, 23, 23, 0.6);
+    --border-color: rgba(255, 255, 255, 0.1);
+    
+    --mesh-gradient: radial-gradient(at 0% 0%, rgba(29, 78, 216, 0.2) 0px, transparent 50%), radial-gradient(at 100% 0%, rgba(190, 24, 93, 0.2) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(4, 120, 87, 0.2) 0px, transparent 50%), radial-gradient(at 0% 100%, rgba(109, 40, 217, 0.2) 0px, transparent 50%);
   }
 }
 
 body {
-  background: var(--background);
+  background-color: var(--background);
+  background-image: var(--mesh-gradient);
+  background-attachment: fixed;
+  background-size: cover;
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Base utility for glass effect */
+.glass {
+  background: var(--surface);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.05);
+}
+
+.glass-hover:hover {
+    background: color-mix(in srgb, var(--surface), white 10%);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
 }

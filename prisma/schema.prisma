@@ -35,16 +35,28 @@ model Service {
 }
 
 model Appointment {
-  id        String   @id @default(cuid())
-  startUtc  DateTime
-  endUtc    DateTime
-  status    String   @default("confirmed") // "confirmed", "cancelled", "completed"
-  userId    String?  
-  user      User?    @relation(fields: [userId], references: [id])
-  serviceId String
-  service   Service  @relation(fields: [serviceId], references: [id])
-  guestName String?
-  guestPhone String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               String   @id @default(cuid())
+  startUtc         DateTime
+  endUtc           DateTime
+  status           String   @default("confirmed") // "confirmed", "cancelled", "completed"
+  attendanceStatus String?  // "arrived" | "no_show" | null
+  reminderSent     Boolean  @default(false)
+  isBlocked        Boolean  @default(false) // true = admin-blocked slot
+  userId           String?  
+  user             User?    @relation(fields: [userId], references: [id])
+  serviceId        String?
+  service          Service? @relation(fields: [serviceId], references: [id])
+  guestName        String?
+  guestPhone       String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Settings {
+  id                 String   @id @default("default")
+  workStartHour      Int      @default(9)
+  workEndHour        Int      @default(17)
+  blackoutDates      String[] @default([])
+  smsReminderMinutes Int      @default(120)
+  updatedAt          DateTime @updatedAt
 }

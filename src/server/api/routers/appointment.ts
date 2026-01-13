@@ -1,64 +1,82 @@
 import { z } from "zod";
 import { createRouter, publicProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
+import { sendBookingConfirmation } from "@/lib/sms";
+import { format } from "date-fns";
+import { he } from "date-fns/locale";
 
 export const appointmentRouter = createRouter({
+    // Get customer profile by phone (for name auto-fill)
+    getCustomerProfile: publicProcedure
+        .input(z.object({ phone: z.string() }))
+        .query(async ({ ctx, input }) => {
+            return await ctx.prisma.user.findUnique({
+                where: { phone: input.phone },
+                select: { name: true, phone: true },
+            });
+        }),
+
     getAvailability: publicProcedure
         .input(z.object({
             serviceId: z.string(),
-            date: z.date(), // Client sends start of day or specific date
+            date: z.date(),
         }))
         .query(async ({ ctx, input }) => {
-            // Very simple availability: fetch all appointments for the day and return open slots
-            // 10x shortcut: assume 9-5, 1 hour slots for now (dynamic later)
-
             const startOfDay = new Date(input.date);
             startOfDay.setHours(0, 0, 0, 0);
             const endOfDay = new Date(startOfDay);
             endOfDay.setHours(23, 59, 59, 999);
 
+            // Get settings
+            let settings = await ctx.prisma.settings.findUnique({
+                where: { id: "default" },
+            });
+            if (!settings) {
+                settings = await ctx.prisma.settings.create({
+                    data: { id: "default" },
+                });
+            }
+
+            // Check blackout
+            const dateStr = format(startOfDay, "yyyy-MM-dd");
+            if (settings.blackoutDates.includes(dateStr)) {
+                return { slots: [], isBlackout: true, slotCount: 0 };
+            }
+
             const appointments = await ctx.prisma.appointment.findMany({
                 where: {
-                    startUtc: {
-                        gte: startOfDay,
-                        lte: endOfDay,
-                    },
-                    status: {
-                        not: "cancelled",
-                    },
+                    startUtc: { gte: startOfDay, lte: endOfDay },
+                    status: { not: "cancelled" },
                 },
             });
 
-            // Generate slots (hardcoded 9:00 to 17:00 for MVP)
-            const slots = [];
             const service = await ctx.prisma.service.findUnique({ where: { id: input.serviceId } });
             if (!service) throw new TRPCError({ code: "NOT_FOUND", message: "Service not found" });
 
+            const slots: Date[] = [];
             const durationMs = service.durationMin * 60 * 1000;
-            let currentTime = new Date(startOfDay);
-            currentTime.setHours(9, 0, 0, 0); // Start at 9 AM
+
+            const currentTime = new Date(startOfDay);
+            currentTime.setHours(settings.workStartHour, 0, 0, 0);
 
             const endTime = new Date(startOfDay);
-            endTime.setHours(17, 0, 0, 0); // End at 5 PM
+            endTime.setHours(settings.workEndHour, 0, 0, 0);
 
             while (currentTime < endTime) {
                 const slotEnd = new Date(currentTime.getTime() + durationMs);
 
-                // Check overlap
-                const isTaken = appointments.some((appt: { startUtc: Date; endUtc: Date }) => {
-                    return (
-                        (appt.startUtc < slotEnd && appt.endUtc > currentTime)
-                    );
-                });
+                const isTaken = appointments.some((appt) =>
+                    appt.startUtc < slotEnd && appt.endUtc > currentTime
+                );
 
-                if (!isTaken) {
+                if (!isTaken && slotEnd <= endTime) {
                     slots.push(new Date(currentTime));
                 }
 
-                currentTime = new Date(currentTime.getTime() + durationMs); // Simple logic: jump by duration
+                currentTime.setTime(currentTime.getTime() + durationMs);
             }
 
-            return slots;
+            return { slots, isBlackout: false, slotCount: slots.length };
         }),
 
     book: publicProcedure
@@ -74,10 +92,8 @@ export const appointmentRouter = createRouter({
 
             const endUtc = new Date(input.startUtc.getTime() + service.durationMin * 60 * 1000);
 
-            // Check double booking (race condition possible without raw SQL locking or serializable isolation, but unique constraints on a Slot table is better. For MVP, we use Prisma transaction + check)
-            // Actually Prisma interactive transactions are good here.
-
-            return await ctx.prisma.$transaction(async (tx) => {
+            const appointment = await ctx.prisma.$transaction(async (tx) => {
+                // Check conflict
                 const conflict = await tx.appointment.findFirst({
                     where: {
                         status: { not: "cancelled" },
@@ -93,6 +109,17 @@ export const appointmentRouter = createRouter({
                     throw new TRPCError({ code: "CONFLICT", message: "Slot already taken" });
                 }
 
+                // Upsert user by phone (link appointments to real users)
+                const user = await tx.user.upsert({
+                    where: { phone: input.guestPhone },
+                    update: { name: input.guestName },
+                    create: {
+                        phone: input.guestPhone,
+                        name: input.guestName,
+                        email: `${input.guestPhone.replace(/\D/g, "")}@phone.local`,
+                    },
+                });
+
                 return await tx.appointment.create({
                     data: {
                         serviceId: input.serviceId,
@@ -100,9 +127,52 @@ export const appointmentRouter = createRouter({
                         endUtc: endUtc,
                         guestName: input.guestName,
                         guestPhone: input.guestPhone,
+                        userId: user.id,
                     },
+                    include: { service: true },
                 });
             });
+
+            // SMS confirmation
+            sendBookingConfirmation(input.guestPhone, {
+                serviceName: service.title,
+                date: format(input.startUtc, "d בMMMM", { locale: he }),
+                time: format(input.startUtc, "HH:mm"),
+            }).catch(console.error);
+
+            return appointment;
+        }),
+
+    // Block a specific time slot (admin)
+    blockSlot: publicProcedure
+        .input(z.object({
+            startUtc: z.date(),
+            durationMin: z.number().default(30),
+            reason: z.string().optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+            const endUtc = new Date(input.startUtc.getTime() + input.durationMin * 60 * 1000);
+
+            return await ctx.prisma.appointment.create({
+                data: {
+                    startUtc: input.startUtc,
+                    endUtc,
+                    isBlocked: true,
+                    status: "confirmed",
+                    guestName: input.reason || "חסום",
+                },
+            });
+        }),
+
+    // Unblock (delete blocked appointment)
+    unblockSlot: publicProcedure
+        .input(z.object({ id: z.string() }))
+        .mutation(async ({ ctx, input }) => {
+            const apt = await ctx.prisma.appointment.findUnique({ where: { id: input.id } });
+            if (!apt?.isBlocked) {
+                throw new TRPCError({ code: "BAD_REQUEST", message: "Not a blocked slot" });
+            }
+            return await ctx.prisma.appointment.delete({ where: { id: input.id } });
         }),
 
     cancel: publicProcedure
@@ -114,9 +184,32 @@ export const appointmentRouter = createRouter({
             });
         }),
 
+    markAttendance: publicProcedure
+        .input(z.object({
+            id: z.string(),
+            status: z.enum(["arrived", "no_show"]),
+        }))
+        .mutation(async ({ ctx, input }) => {
+            return await ctx.prisma.appointment.update({
+                where: { id: input.id },
+                data: { attendanceStatus: input.status },
+                include: { service: true },
+            });
+        }),
+
+    clearAttendance: publicProcedure
+        .input(z.object({ id: z.string() }))
+        .mutation(async ({ ctx, input }) => {
+            return await ctx.prisma.appointment.update({
+                where: { id: input.id },
+                data: { attendanceStatus: null },
+                include: { service: true },
+            });
+        }),
+
     list: publicProcedure.query(async ({ ctx }) => {
         return await ctx.prisma.appointment.findMany({
-            include: { service: true },
+            include: { service: true, user: true },
             orderBy: { startUtc: "asc" },
         });
     }),
@@ -124,8 +217,19 @@ export const appointmentRouter = createRouter({
     listByPhone: publicProcedure
         .input(z.object({ phone: z.string() }))
         .query(async ({ ctx, input }) => {
+            // Get user by phone first
+            const user = await ctx.prisma.user.findUnique({
+                where: { phone: input.phone },
+            });
+
+            // Return appointments linked by userId OR guestPhone (backwards compat)
             return await ctx.prisma.appointment.findMany({
-                where: { guestPhone: input.phone },
+                where: {
+                    OR: [
+                        { userId: user?.id },
+                        { guestPhone: input.phone },
+                    ].filter(Boolean),
+                },
                 include: { service: true },
                 orderBy: { startUtc: "desc" },
             });

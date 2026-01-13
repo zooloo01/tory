@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { DEBUG_COOKIE_NAME, isDebugPhone } from "./lib/constants";
 
 export async function middleware(request: NextRequest) {
     let supabaseResponse = NextResponse.next({ request });
@@ -27,6 +28,12 @@ export async function middleware(request: NextRequest) {
 
     const { data: { user } } = await supabase.auth.getUser();
 
+    // Debug user bypass
+    const debugCookie = request.cookies.get(DEBUG_COOKIE_NAME);
+    const debugUserPhone = debugCookie?.value;
+    const isDebugActive = debugUserPhone && isDebugPhone(debugUserPhone);
+    const effectiveUser = user || (isDebugActive ? { phone: debugUserPhone } : null);
+
     const pathname = request.nextUrl.pathname;
 
     // Protected routes
@@ -35,18 +42,18 @@ export async function middleware(request: NextRequest) {
     const authRoutes = ["/login"];
 
     // Redirect logged-in users away from auth routes
-    if (user && authRoutes.some((route) => pathname.startsWith(route))) {
+    if (effectiveUser && authRoutes.some((route) => pathname.startsWith(route))) {
         return NextResponse.redirect(new URL("/book", request.url));
     }
 
     // Redirect unauthenticated users to login
-    if (!user && customerRoutes.some((route) => pathname.startsWith(route))) {
+    if (!effectiveUser && customerRoutes.some((route) => pathname.startsWith(route))) {
         return NextResponse.redirect(new URL("/login", request.url));
     }
 
     // Admin route protection - check if user's phone is in admin table
     if (adminRoutes.some((route) => pathname.startsWith(route))) {
-        if (!user) {
+        if (!effectiveUser) {
             return NextResponse.redirect(new URL("/login", request.url));
         }
         // Role check happens client-side after login for simplicity
